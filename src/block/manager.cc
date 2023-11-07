@@ -76,8 +76,11 @@ auto BlockManager::write_block(block_id_t block_id, const u8 *data)
     -> ChfsNullResult {
   
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
+  //UNIMPLEMENTED();
+  auto block_offset = block_id * this->block_sz;
+  for(usize i=0;i<this->block_sz;++i){
+    block_data[block_offset + i] = data[i];
+  }
   return KNullOk;
 }
 
@@ -86,23 +89,39 @@ auto BlockManager::write_partial_block(block_id_t block_id, const u8 *data,
     -> ChfsNullResult {
   
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
+  //UNIMPLEMENTED();
+  auto block_offset = block_id * this->block_sz;
+  for(usize i=0;i<len;++i){
+    block_data[block_offset + offset + i] = data[i];
+  }
   return KNullOk;
 }
 
 auto BlockManager::read_block(block_id_t block_id, u8 *data) -> ChfsNullResult {
 
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
+  //UNIMPLEMENTED();
+  auto block_offset = block_id * this->block_sz;
+  for(usize i=0;i<this->block_sz;++i){
+    // //!debug//
+    // if(block_offset + i >= this->total_storage_sz()){
+    //   std::cerr << "OUT OF RANGE! " << block_offset + i << " " << this->total_storage_sz() << std::endl;
+    // }
+    // CHFS_ASSERT(block_offset + i < this->total_storage_sz(), "OUT OF RANGE ASSERT!");
+    // //!debug//
+    data[i] = block_data[block_offset + i];
+  }
   return KNullOk;
 }
 
 auto BlockManager::zero_block(block_id_t block_id) -> ChfsNullResult {
   
   // TODO: Implement this function.
-  UNIMPLEMENTED();
+  //UNIMPLEMENTED();
+  usize block_offset = block_id * this->block_sz;
+  for(usize i=0;i<this->block_sz;++i){
+    block_data[block_offset + i] = (u8)0;
+  }
 
   return KNullOk;
 }
