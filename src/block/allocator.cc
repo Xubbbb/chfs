@@ -11,6 +11,7 @@ BlockAllocator::BlockAllocator(std::shared_ptr<BlockManager> block_manager,
                                usize bitmap_block_id, bool will_initialize)
     : bm(std::move(block_manager)), bitmap_block_id(bitmap_block_id) {
   // calculate the total blocks required
+  // 计算bitmap需要占据多少个block
   const auto total_bits_per_block = this->bm->block_size() * KBitsPerByte;
   auto total_bitmap_block = this->bm->total_blocks() / total_bits_per_block;
   if (this->bm->total_blocks() % total_bits_per_block != 0) {
@@ -53,6 +54,7 @@ BlockAllocator::BlockAllocator(std::shared_ptr<BlockManager> block_manager,
     auto block_id = i / total_bits_per_block + this->bitmap_block_id;
     auto block_idx = i % total_bits_per_block;
 
+    // 如果开始写下一个block了，将上一个block的buffer中的内容flush进去
     if (block_id != cur_block_id) {
       bm->write_block(cur_block_id, buffer.data());
 
@@ -95,6 +97,7 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
   std::vector<u8> buffer(bm->block_size());
 
   for (uint i = 0; i < this->bitmap_block_cnt; i++) {
+    // 读取bitmap的时候也只能以block的粒度来读取
     bm->read_block(i + this->bitmap_block_id, buffer.data());
 
     // The index of the allocated bit inside current bitmap block.
@@ -105,12 +108,20 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
 
       // TODO: Find the first free bit of current bitmap block
       // and store it in `res`.
-      UNIMPLEMENTED();
+      //UNIMPLEMENTED();
+      std::optional<usize> res_tmp = Bitmap(buffer.data(), bm->block_size()).find_first_free_w_bound(this->last_block_num);
+      if(res_tmp.has_value()){
+        res = res_tmp.value();
+      }
     } else {
 
       // TODO: Find the first free bit of current bitmap block
       // and store it in `res`.
-      UNIMPLEMENTED();
+      //UNIMPLEMENTED();
+      std::optional<usize> res_tmp = Bitmap(buffer.data(), bm->block_size()).find_first_free();
+      if(res_tmp.has_value()){
+        res = res_tmp.value();
+      }
     }
 
     // If we find one free bit inside current bitmap block.
@@ -122,7 +133,10 @@ auto BlockAllocator::allocate() -> ChfsResult<block_id_t> {
       // 1. Set the free bit we found to 1 in the bitmap.
       // 2. Flush the changed bitmap block back to the block manager.
       // 3. Calculate the value of `retval`.
-      UNIMPLEMENTED();
+      //UNIMPLEMENTED();
+      Bitmap(buffer.data(), bm->block_size()).set(res.value());
+      bm->write_block(i + this->bitmap_block_id, buffer.data());
+      retval = i * bm->block_size() * KBitsPerByte + res.value();
 
       return ChfsResult<block_id_t>(retval);
     }
@@ -141,8 +155,20 @@ auto BlockAllocator::deallocate(block_id_t block_id) -> ChfsNullResult {
   // 2. Flush the changed bitmap block back to the block manager.
   // 3. Return ChfsNullResult(ErrorType::INVALID_ARG) 
   //    if you find `block_id` is invalid (e.g. already freed).
-  UNIMPLEMENTED();
+  //UNIMPLEMENTED();
+  const auto total_bits_per_block = this->bm->block_size() * KBitsPerByte;
+  auto bitmap_block_id_global = block_id / total_bits_per_block + this->bitmap_block_id;
+  auto bitmap_block_idx = block_id % total_bits_per_block;
 
+  std::vector<u8> buffer(bm->block_size());
+  bm->read_block(bitmap_block_id_global, buffer.data()).unwrap();
+  auto bitmap = Bitmap(buffer.data(), bm->block_size());
+  // 如果这个block尚未被分配，返回一个error
+  if(!bitmap.check(bitmap_block_idx)){
+    return ChfsNullResult(ErrorType::INVALID_ARG);
+  }
+  bitmap.clear(bitmap_block_idx);
+  bm->write_block(bitmap_block_id_global, buffer.data());
   return KNullOk;
 }
 
