@@ -124,23 +124,44 @@ auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
     -> inode_id_t {
   // TODO: Implement this function.
   //UNIMPLEMENTED();
+  //! global mutex !//
+  global_mtx.lock();
+  //! global mutex !//
   if(type == DirectoryType){
     auto mkdir_res = operation_->mkdir(parent, name.data());
     if(mkdir_res.is_err()){
+      //! global mutex !//
+      global_mtx.unlock();
+      //! global mutex !//
       return KInvalidInodeID;
     }
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return mkdir_res.unwrap();
   }
   else if(type == RegularFileType){
     auto mkfile_res = operation_->mkfile(parent, name.data());
     if(mkfile_res.is_err()){
+      //! global mutex !//
+      global_mtx.unlock();
+      //! global mutex !//
       return KInvalidInodeID;
     }
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return mkfile_res.unwrap();
   }
   else{
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return KInvalidInodeID;
   }
+  //! global mutex !//
+  global_mtx.unlock();
+  //! global mutex !//
   return 0;
 }
 
@@ -149,14 +170,23 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
     -> bool {
   // TODO: Implement this function.
   //UNIMPLEMENTED();
+  //! global mutex !//
+  global_mtx.lock();
+  //! global mutex !//
   // 由于unlink一个file的时候会涉及到多个节点上存储的block的deallocate, 故需要重写
   auto lookup_res = operation_->lookup(parent, name.data());
   if(lookup_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   auto unlink_inode_id = lookup_res.unwrap();
   auto type_res = operation_->gettype(unlink_inode_id);
   if(type_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   auto unlink_type = type_res.unwrap();
@@ -165,11 +195,20 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
       // for dir type, this is the same as lab1 unlink
       auto unlink_res = operation_->unlink(parent, name.data());
       if(unlink_res.is_err()){
+        //! global mutex !//
+        global_mtx.unlock();
+        //! global mutex !//
         return false;
       }
+      //! global mutex !//
+      global_mtx.unlock();
+      //! global mutex !//
       return true;
     }
     else{
+      //! global mutex !//
+      global_mtx.unlock();
+      //! global mutex !//
       return false;
     }
   }
@@ -179,18 +218,27 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
   // 获取存储inode信息的block的位置
   auto inode_block_res = operation_->inode_manager_->get(unlink_inode_id);
   if(inode_block_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   auto inode_block_id = inode_block_res.unwrap();
   // 首先free inode
   auto free_inode_res = operation_->inode_manager_->free_inode(unlink_inode_id);
   if(free_inode_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
 
   // free所有相关的block
   auto local_free_res = operation_->block_allocator_->deallocate(inode_block_id);
   if(local_free_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   for(auto block_info : block_info_list){
@@ -200,21 +248,52 @@ auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
     auto it = clients_.find(mac_id);
     if(it == clients_.end()){
       // 没有找到这台机器
+      //! global mutex !//
+      global_mtx.unlock();
+      //! global mutex !//
       return false;
     }
     else{
       auto target_mac = it->second;
       auto response = target_mac->call("free_block", block_id);
       if(response.is_err()){
+        //! global mutex !//
+        global_mtx.unlock();
+        //! global mutex !//
         return false;
       }
       auto is_success = response.unwrap()->as<bool>();
       if(!is_success){
+        //! global mutex !//
+        global_mtx.unlock();
+        //! global mutex !//
         return false;
       }
     }
   }
 
+  // remove this file record from its parent directort entity
+  auto read_parent_res = operation_->read_file(parent);
+  if(read_parent_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
+    return false;
+  }
+  auto parent_content = read_parent_res.unwrap();
+  std::string parent_content_str(reinterpret_cast<char *>(parent_content.data()), parent_content.size());
+  std::string parent_content_str_change = rm_from_directory(parent_content_str, name);
+  std::vector<u8> new_dir_vec(parent_content_str_change.begin(), parent_content_str_change.end());
+  auto write_res = operation_->write_file(parent, new_dir_vec);
+  if(write_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
+    return false;
+  }
+  //! global mutex !//
+  global_mtx.unlock();
+  //! global mutex !//
   return true;
 }
 
@@ -302,7 +381,13 @@ auto MetadataServer::get_block_map(inode_id_t id) -> std::vector<BlockInfo> {
 auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
   // TODO: Implement this function.
   // UNIMPLEMENTED();
+  //! global mutex !//
+  global_mtx.lock();
+  //! global mutex !//
   if(id > operation_->inode_manager_->get_max_inode_supported()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, 0, 0);
   }
   // we assume that the file inode don't have indirect block and the block_id & mac_id are organized as this form in the inode block:
@@ -321,14 +406,23 @@ auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
   auto inode_ptr = reinterpret_cast<Inode *>(file_inode.data());
   auto get_res = operation_->inode_manager_->get(id);
   if(get_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, 0, 0);
   }
   auto inode_block_id = get_res.unwrap();
   if(inode_block_id == KInvalidBlockID){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, 0, 0);
   }
   auto read_block_res = operation_->block_manager_->read_block(inode_block_id, file_inode.data());
   if(read_block_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, 0, 0);
   }
   // 2. make sure that we have space to allocate a new block for this file
@@ -348,6 +442,9 @@ auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
 
   // check after alloc the Inode block is whether full or not
   if(2 * (old_block_num + 1) > inode_ptr->get_nblocks()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, 0, 0);
   }
   auto idx = 2 * old_block_num;
@@ -363,11 +460,17 @@ auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
   mac_id_t target_mac_id = mac_ids[rand_num];
   auto it = clients_.find(target_mac_id);
   if(it == clients_.end()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, 0, 0);
   }
   auto target_mac = it->second;
   auto response = target_mac->call("alloc_block");
   if(response.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, target_mac_id, 0);
   }
   auto response_pair = response.unwrap()->as<std::pair<chfs::block_id_t, chfs::version_t>>();
@@ -382,8 +485,14 @@ auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
 
   auto write_res = operation_->block_manager_->write_block(inode_block_id, file_inode.data());
   if(write_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return BlockInfo(KInvalidBlockID, 0, 0);
   }
+  //! global mutex !//
+  global_mtx.unlock();
+  //! global mutex !//
   return BlockInfo(block_id, target_mac_id, version_id);
 }
 
@@ -392,12 +501,20 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
                                 mac_id_t machine_id) -> bool {
   // TODO: Implement this function.
   //UNIMPLEMENTED();
-
+  //! global mutex !//
+  global_mtx.lock();
+  //! global mutex !//
   // first we find and check this record in inode block, whether the block id and machine id is right
   if(id > operation_->inode_manager_->get_max_inode_supported()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   if(block_id == KInvalidBlockID){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   const auto BLOCK_SIZE = operation_->block_manager_->block_size();
@@ -407,14 +524,23 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
   auto inode_ptr = reinterpret_cast<Inode *>(file_inode.data());
   auto get_res = operation_->inode_manager_->get(id);
   if(get_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   auto inode_block_id = get_res.unwrap();
   if(inode_block_id == KInvalidBlockID){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   auto read_block_res = operation_->block_manager_->read_block(inode_block_id, file_inode.data());
   if(read_block_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   // find this record 
@@ -428,20 +554,32 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
     }
   }
   if(!is_found){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   //..............//
   auto it = clients_.find(machine_id);
   if(it == clients_.end()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   auto target_mac = it->second; 
   auto response = target_mac->call("free_block", block_id);
   if(response.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   auto is_success = response.unwrap()->as<bool>();
   if(!is_success){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
   // remove this record from local inode block
@@ -459,8 +597,14 @@ auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
   }
   auto write_res = operation_->block_manager_->write_block(inode_block_id, file_inode.data());
   if(write_res.is_err()){
+    //! global mutex !//
+    global_mtx.unlock();
+    //! global mutex !//
     return false;
   }
+  //! global mutex !//
+  global_mtx.unlock();
+  //! global mutex !//
   return true;
 }
 

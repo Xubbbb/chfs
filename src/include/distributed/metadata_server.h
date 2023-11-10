@@ -245,6 +245,7 @@ private:
   /**
    * {You can add anything you want here}
    */
+  std::mutex global_mtx;
 };
 
 } // namespace chfs
