@@ -123,8 +123,24 @@ MetadataServer::MetadataServer(std::string const &address, u16 port,
 auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
     -> inode_id_t {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
+  //UNIMPLEMENTED();
+  if(type == DirectoryType){
+    auto mkdir_res = operation_->mkdir(parent, name.data());
+    if(mkdir_res.is_err()){
+      return KInvalidInodeID;
+    }
+    return mkdir_res.unwrap();
+  }
+  else if(type == RegularFileType){
+    auto mkfile_res = operation_->mkfile(parent, name.data());
+    if(mkfile_res.is_err()){
+      return KInvalidInodeID;
+    }
+    return mkfile_res.unwrap();
+  }
+  else{
+    return KInvalidInodeID;
+  }
   return 0;
 }
 
@@ -132,61 +148,350 @@ auto MetadataServer::mknode(u8 type, inode_id_t parent, const std::string &name)
 auto MetadataServer::unlink(inode_id_t parent, const std::string &name)
     -> bool {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
+  //UNIMPLEMENTED();
+  // 由于unlink一个file的时候会涉及到多个节点上存储的block的deallocate, 故需要重写
+  auto lookup_res = operation_->lookup(parent, name.data());
+  if(lookup_res.is_err()){
+    return false;
+  }
+  auto unlink_inode_id = lookup_res.unwrap();
+  auto type_res = operation_->gettype(unlink_inode_id);
+  if(type_res.is_err()){
+    return false;
+  }
+  auto unlink_type = type_res.unwrap();
+  if(unlink_type != InodeType::FILE){
+    if(unlink_type == InodeType::Directory){
+      // for dir type, this is the same as lab1 unlink
+      auto unlink_res = operation_->unlink(parent, name.data());
+      if(unlink_res.is_err()){
+        return false;
+      }
+      return true;
+    }
+    else{
+      return false;
+    }
+  }
+  // 下面实现remove_file的逻辑
+  // 获取该文件中所有数据block的信息
+  auto block_info_list = this->get_block_map(unlink_inode_id);
+  // 获取存储inode信息的block的位置
+  auto inode_block_res = operation_->inode_manager_->get(unlink_inode_id);
+  if(inode_block_res.is_err()){
+    return false;
+  }
+  auto inode_block_id = inode_block_res.unwrap();
+  // 首先free inode
+  auto free_inode_res = operation_->inode_manager_->free_inode(unlink_inode_id);
+  if(free_inode_res.is_err()){
+    return false;
+  }
 
-  return false;
+  // free所有相关的block
+  auto local_free_res = operation_->block_allocator_->deallocate(inode_block_id);
+  if(local_free_res.is_err()){
+    return false;
+  }
+  for(auto block_info : block_info_list){
+    block_id_t block_id = std::get<0>(block_info);
+    mac_id_t mac_id = std::get<1>(block_info);
+    // version_t version_id = std::get<2>(block_info);
+    auto it = clients_.find(mac_id);
+    if(it == clients_.end()){
+      // 没有找到这台机器
+      return false;
+    }
+    else{
+      auto target_mac = it->second;
+      auto response = target_mac->call("free_block", block_id);
+      if(response.is_err()){
+        return false;
+      }
+      auto is_success = response.unwrap()->as<bool>();
+      if(!is_success){
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 // {Your code here}
 auto MetadataServer::lookup(inode_id_t parent, const std::string &name)
     -> inode_id_t {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
-  return 0;
+  //UNIMPLEMENTED();
+  auto lookup_res = operation_->lookup(parent, name.data());
+  if(lookup_res.is_err()){
+    return KInvalidInodeID;
+  }
+  return lookup_res.unwrap();
 }
 
 // {Your code here}
 auto MetadataServer::get_block_map(inode_id_t id) -> std::vector<BlockInfo> {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
+  // UNIMPLEMENTED();
+  const auto BLOCK_SIZE = operation_->block_manager_->block_size();
+  std::vector<u8> buffer(BLOCK_SIZE);
+  std::vector<BlockInfo> res(0);
 
-  return {};
+  if(id > operation_->inode_manager_->get_max_inode_supported()){
+    return res;
+  }
+  auto type_res = operation_->gettype(id);
+  if(type_res.is_err()){
+    return res;
+  }
+  auto inode_type = type_res.unwrap();
+  if(inode_type != InodeType::FILE){
+    return res;
+  }
+  auto get_res = operation_->inode_manager_->get(id);
+  if(get_res.is_err()){
+    return res;
+  }
+  auto inode_block_id = get_res.unwrap();
+  if(inode_block_id == KInvalidBlockID){
+    return res;
+  }
+  auto read_block_res = operation_->block_manager_->read_block(inode_block_id, buffer.data());
+  if(read_block_res.is_err()){
+    return res;
+  }
+  Inode* inode_ptr = reinterpret_cast<Inode *>(buffer.data());
+  // auto file_size = inode_ptr->get_size();
+
+  // 直到读到第一个invalid的block id
+  for(uint i = 0;i < inode_ptr->get_nblocks();i = i + 2){
+    if(inode_ptr->blocks[i] == KInvalidBlockID){
+      break;
+    }
+    block_id_t block_id = inode_ptr->blocks[i];
+    mac_id_t mac_id = static_cast<mac_id_t>(inode_ptr->blocks[i + 1]);
+    // TODO : add version id into map
+    //...call data server to return version block to get the latest version of this block...//
+    auto it = clients_.find(mac_id);
+    if(it == clients_.end()){
+      res.clear();
+      return res;
+    }
+    auto target_mac = it->second;
+    auto KVersionPerBlock = BLOCK_SIZE / sizeof(version_t);
+    auto version_block_id = block_id / KVersionPerBlock;
+    auto version_in_block_idx = block_id % KVersionPerBlock;
+    //! for version block's version should be 0 forever
+    auto response = target_mac->call("read_data", version_block_id, version_in_block_idx * sizeof(version_t), sizeof(version_t), 0);
+    if(response.is_err()){
+      res.clear();
+      return res;
+    }
+    auto response_vec = response.unwrap()->as<std::vector<u8>>();
+    auto version_ptr = reinterpret_cast<version_t *>(response_vec.data());
+    //...fetch version finish...//
+    version_t version_id = *version_ptr;
+    res.push_back(BlockInfo(block_id, mac_id, version_id));
+  }
+
+  return res;
 }
 
 // {Your code here}
 auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
+  // UNIMPLEMENTED();
+  if(id > operation_->inode_manager_->get_max_inode_supported()){
+    return BlockInfo(KInvalidBlockID, 0, 0);
+  }
+  // we assume that the file inode don't have indirect block and the block_id & mac_id are organized as this form in the inode block:
 
-  return {};
+  // type | file_attr | block_id | mac_id | block_id | mac_id | ...  | block_id | mac_id (fortunatelly, block_id and mac_id is the same byte long); 
+  
+  // I don't know whether I should confirm this inode is a file inode, I assume that I don't need to confirm this is a file inode.
+
+  // first, we will check whether the inode block have enough space to store a new block info pair
+  const auto BLOCK_SIZE = operation_->block_manager_->block_size();
+  usize old_block_num = 0;
+  // u64 original_file_sz = 0;
+
+  // 1. read the inode
+  std::vector<u8> file_inode(BLOCK_SIZE);
+  auto inode_ptr = reinterpret_cast<Inode *>(file_inode.data());
+  auto get_res = operation_->inode_manager_->get(id);
+  if(get_res.is_err()){
+    return BlockInfo(KInvalidBlockID, 0, 0);
+  }
+  auto inode_block_id = get_res.unwrap();
+  if(inode_block_id == KInvalidBlockID){
+    return BlockInfo(KInvalidBlockID, 0, 0);
+  }
+  auto read_block_res = operation_->block_manager_->read_block(inode_block_id, file_inode.data());
+  if(read_block_res.is_err()){
+    return BlockInfo(KInvalidBlockID, 0, 0);
+  }
+  // 2. make sure that we have space to allocate a new block for this file
+  // it seems like it just only alloc not write, so this operation won't change attr ???
+  // there are two methods to get old_block_num
+  // (1) by file size
+  // original_file_sz = inode_ptr->get_size();
+  // old_block_num = (original_file_sz % BLOCK_SIZE) ? (original_file_sz / BLOCK_SIZE + 1) : (original_file_sz / BLOCK_SIZE);
+  // (2) by first Invalid slot
+  old_block_num = 0;
+  for(uint i = 0;i < inode_ptr->get_nblocks();i = i + 2){
+    if(inode_ptr->blocks[i] == KInvalidBlockID){
+      old_block_num = i / 2;
+      break;
+    }
+  }
+
+  // check after alloc the Inode block is whether full or not
+  if(2 * (old_block_num + 1) > inode_ptr->get_nblocks()){
+    return BlockInfo(KInvalidBlockID, 0, 0);
+  }
+  auto idx = 2 * old_block_num;
+  // prepare work finish
+
+  // second, we randomly alloc a block from dataservers
+  std::vector<mac_id_t> mac_ids;
+  for (const auto& pair : clients_) {
+    mac_ids.push_back(pair.first);
+  }
+  auto rand_num = generator.rand(0, mac_ids.size());
+  mac_id_t target_mac_id = mac_ids[rand_num];
+  auto target_mac = clients_.find(target_mac_id)->second;
+
+  auto response = target_mac->call("alloc_block");
+  if(response.is_err()){
+    return BlockInfo(KInvalidBlockID, target_mac_id, 0);
+  }
+  auto response_pair = response.unwrap()->as<std::pair<chfs::block_id_t, chfs::version_t>>();
+  auto block_id = response_pair.first;
+  auto version_id = response_pair.second;
+  
+  // third, update the info in metadata_server locally
+  inode_ptr->set_block_direct(idx, block_id);
+  inode_ptr->set_block_direct(idx + 1, target_mac_id);
+  
+  // maybe todo: update the attr of inode
+
+  auto write_res = operation_->block_manager_->write_block(inode_block_id, file_inode.data());
+  if(write_res.is_err()){
+    return BlockInfo(KInvalidBlockID, 0, 0);
+  }
+  return BlockInfo(block_id, target_mac_id, version_id);
 }
 
 // {Your code here}
 auto MetadataServer::free_block(inode_id_t id, block_id_t block_id,
                                 mac_id_t machine_id) -> bool {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
+  //UNIMPLEMENTED();
 
-  return false;
+  // first we find and check this record in inode block, whether the block id and machine id is right
+  if(id > operation_->inode_manager_->get_max_inode_supported()){
+    return false;
+  }
+  if(block_id == KInvalidBlockID){
+    return false;
+  }
+  const auto BLOCK_SIZE = operation_->block_manager_->block_size();
+
+  // 1. read the inode
+  std::vector<u8> file_inode(BLOCK_SIZE);
+  auto inode_ptr = reinterpret_cast<Inode *>(file_inode.data());
+  auto get_res = operation_->inode_manager_->get(id);
+  if(get_res.is_err()){
+    return false;
+  }
+  auto inode_block_id = get_res.unwrap();
+  if(inode_block_id == KInvalidBlockID){
+    return false;
+  }
+  auto read_block_res = operation_->block_manager_->read_block(inode_block_id, file_inode.data());
+  if(read_block_res.is_err()){
+    return false;
+  }
+  // find this record 
+  bool is_found = false;
+  uint record_idx = 0;
+  for(uint i = 0;i < inode_ptr->get_nblocks();i = i + 2){
+    if(inode_ptr->blocks[i] == block_id && inode_ptr->blocks[i + 1] == machine_id){
+      is_found = true;
+      record_idx = i;
+      break;
+    }
+  }
+  if(!is_found){
+    return false;
+  }
+  //..............//
+  auto it = clients_.find(machine_id);
+  if(it == clients_.end()){
+    return false;
+  }
+  auto target_mac = it->second; 
+  auto response = target_mac->call("free_block", block_id);
+  if(response.is_err()){
+    return false;
+  }
+  auto is_success = response.unwrap()->as<bool>();
+  if(!is_success){
+    return false;
+  }
+  // remove this record from local inode block
+  for(uint i = record_idx;i < inode_ptr->get_nblocks();i = i + 2){
+    if(i + 3 >= inode_ptr->get_nblocks()){
+      inode_ptr->blocks[i] = KInvalidBlockID;
+      inode_ptr->blocks[i + 1] = 0;
+      break;
+    }
+    inode_ptr->blocks[i] = inode_ptr->blocks[i + 2];
+    inode_ptr->blocks[i + 1] = inode_ptr->blocks[i + 3];
+    if(inode_ptr->blocks[i + 2] == KInvalidBlockID){
+      break;
+    }
+  }
+  auto write_res = operation_->block_manager_->write_block(inode_block_id, file_inode.data());
+  if(write_res.is_err()){
+    return false;
+  }
+  return true;
 }
 
 // {Your code here}
 auto MetadataServer::readdir(inode_id_t node)
     -> std::vector<std::pair<std::string, inode_id_t>> {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
-
-  return {};
+  //UNIMPLEMENTED();
+  std::vector<std::pair<std::string, inode_id_t>> res_vec(0);
+  std::list<DirectoryEntry> list;
+  auto read_res = read_directory(operation_.get(), node, list);
+  if(read_res.is_err()){
+    return res_vec;
+  }
+  for(const auto &entry : list){
+    std::pair<std::string, inode_id_t> vec_element(entry.name, entry.id);
+    res_vec.push_back(vec_element);
+  }
+  return res_vec;
 }
 
 // {Your code here}
 auto MetadataServer::get_type_attr(inode_id_t id)
     -> std::tuple<u64, u64, u64, u64, u8> {
   // TODO: Implement this function.
-  UNIMPLEMENTED();
+  //UNIMPLEMENTED();
+  auto get_res = operation_->get_type_attr(id);
+  if(get_res.is_err()){
+    return std::tuple<u64, u64, u64, u64, u8>(0, 0, 0, 0, 0);
+  }
+  auto pair = get_res.unwrap();
+  InodeType inode_type = pair.first;
+  FileAttr file_attr = pair.second;
 
-  return {};
+  return std::tuple<u64, u64, u64, u64, u8>(file_attr.size, file_attr.atime, file_attr.mtime, file_attr.ctime, static_cast<u8>(inode_type));
 }
 
 auto MetadataServer::reg_server(const std::string &address, u16 port,
