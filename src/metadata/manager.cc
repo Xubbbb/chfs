@@ -104,10 +104,6 @@ auto InodeManager::allocate_inode(InodeType type, block_id_t bid)
       //UNIMPLEMENTED();
 
       // 在blockmanager中bid的block中初始化这个inode, 并且将inode写到bid这个block中, 完成初始化。
-
-      //!debug//
-      std::cerr << "ALLOCATE INODE bp 0" << std::endl;
-      //!debug//
       auto new_inode = Inode(type, bm->block_size());
       std::vector<u8> buffer_indoe_block(bm->block_size());
       new_inode.flush_to_buffer(buffer_indoe_block.data());
@@ -128,10 +124,6 @@ auto InodeManager::allocate_inode(InodeType type, block_id_t bid)
       buffer_data_u64[inode_table_block_offset] = bid;
       //将inode table 中的这个block写回
       bm->write_block(inode_table_block_id, reinterpret_cast<u8 *>(buffer_data_u64));
-
-      //!debug//
-      std::cerr << "ALLOCATE INODE bp 1" << std::endl;
-      //!debug//
 
       return ChfsResult<inode_id_t>(RAW_2_LOGIC(raw_inode_id));
     }
@@ -173,9 +165,6 @@ auto InodeManager::get(inode_id_t id) -> ChfsResult<block_id_t> {
   // table index.
   //UNIMPLEMENTED();
   if(id == KInvalidInodeID){
-    //!debug//
-    std::cerr << "FAIl !!!!" << std::endl;
-    //!debug//
     return ChfsResult<block_id_t>(ErrorType::INVALID_ARG);
   }
   inode_id_t inode_id_raw = LOGIC_2_RAW(id);
@@ -242,9 +231,6 @@ auto InodeManager::get_type_attr(inode_id_t id)
   std::vector<u8> buffer(bm->block_size());
   auto res = this->read_inode(id, buffer);
   if (res.is_err()) {
-    //!debug//
-    std::cerr << "FAIL HERE! " << id << std::endl;
-    //!debug//
     return ChfsResult<std::pair<InodeType, FileAttr>>(res.unwrap_error());
   }
   Inode *inode_p = reinterpret_cast<Inode *>(buffer.data());

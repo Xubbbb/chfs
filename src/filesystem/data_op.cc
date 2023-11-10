@@ -15,16 +15,10 @@ auto FileOperation::alloc_inode(InodeType type) -> ChfsResult<inode_id_t> {
   // 3. Initialize the inode block
   //    and write the block back to block manager.
   // UNIMPLEMENTED();
-  //!debug//
-  std::cerr << "ALLOC INODE bp 0" << std::endl;
-  //!debug//
   block_id_t allocated_block_id = this->block_allocator_->allocate().unwrap();
   inode_id = this->inode_manager_->allocate_inode(type, allocated_block_id).unwrap();
 
   inode_res = inode_id;
-  //!debug//
-  std::cerr << "ALLOCATE INODE bp 1" << std::endl;
-  //!debug//
   return inode_res;
 }
 

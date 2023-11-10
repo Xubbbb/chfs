@@ -358,10 +358,14 @@ auto MetadataServer::allocate_block(inode_id_t id) -> BlockInfo {
   for (const auto& pair : clients_) {
     mac_ids.push_back(pair.first);
   }
-  auto rand_num = generator.rand(0, mac_ids.size());
+  //! notice: this rand function is not as usually closed on the left, open on the right([a, b)), this is a both closed [a,b]
+  auto rand_num = generator.rand(0, mac_ids.size() - 1);
   mac_id_t target_mac_id = mac_ids[rand_num];
-  auto target_mac = clients_.find(target_mac_id)->second;
-
+  auto it = clients_.find(target_mac_id);
+  if(it == clients_.end()){
+    return BlockInfo(KInvalidBlockID, 0, 0);
+  }
+  auto target_mac = it->second;
   auto response = target_mac->call("alloc_block");
   if(response.is_err()){
     return BlockInfo(KInvalidBlockID, target_mac_id, 0);

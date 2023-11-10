@@ -142,9 +142,6 @@ auto FileOperation::mk_helper(inode_id_t id, const char *name, InodeType type)
   // 2. Create the new inode.
   // 3. Append the new entry to the parent directory.
   //UNIMPLEMENTED();
-  //!debug//
-  std::cerr << "MKHELPER ALLOCATE INODE bp 0" << std::endl;
-  //!debug//
   std::list<DirectoryEntry> list;
   if((this->lookup(id, name)).is_ok()){
     return ChfsResult<inode_id_t>(ErrorType::AlreadyExist);
@@ -161,9 +158,6 @@ auto FileOperation::mk_helper(inode_id_t id, const char *name, InodeType type)
   std::vector<u8> new_dir_vec(new_dir_string.begin(), new_dir_string.end());
   this->write_file(id, new_dir_vec);
 
-  //!debug//
-  std::cerr << "MKHELPER ALLOCATE INODE bp 1" << std::endl;
-  //!debug//
   return ChfsResult<inode_id_t>(allocate_inode_id);
 }
 
@@ -176,24 +170,13 @@ auto FileOperation::unlink(inode_id_t parent, const char *name)
   // 2. Remove the entry from the directory.
   //UNIMPLEMENTED();
   inode_id_t remove_file_inode_id = (this->lookup(parent, name)).unwrap();
-  //!debug//
-  
-  std::cerr << "parent_inode_id:" << parent << std::endl;
-  std::cerr << "remove_file_inode_id:" << remove_file_inode_id << std::endl;
-  //!debug//
   this->remove_file(remove_file_inode_id);
 
   std::string name_str(name);
   std::vector<u8> parent_content = (this->read_file(parent)).unwrap();
   std::string parent_content_str(reinterpret_cast<char *>(parent_content.data()), parent_content.size());
-  //!debug//
-  std::cerr << "BEFORE " << parent_content_str << std::endl;
-  //!debug//
   //...注意这个地方rm_from_directory并不是在传入的string自身上作修改，而是返回修改以后的string值...//
   std::string parent_content_str_change = rm_from_directory(parent_content_str, name_str);
-  //!debug//
-  std::cerr << "AFTER " << parent_content_str_change << std::endl;
-  //!debug//
   std::vector<u8> new_dir_vec(parent_content_str_change.begin(), parent_content_str_change.end());
   this->write_file(parent, new_dir_vec);
   
