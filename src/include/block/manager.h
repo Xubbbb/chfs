@@ -12,6 +12,7 @@
 #pragma once
 
 #include <vector>
+#include <memory>
 
 #include "common/config.h"
 #include "common/macros.h"
@@ -21,6 +22,18 @@ namespace chfs {
 // TODO
 
 class BlockIterator;
+class BlockOperation;
+
+// class BlockOperation {
+// public:
+//   explicit BlockOperation(block_id_t block_id, std::vector<u8> new_block_state)
+//       : block_id_(block_id), new_block_state_(new_block_state) {
+//     CHFS_ASSERT(new_block_state.size() == DiskBlockSize, "invalid block state");
+//   }
+
+//   block_id_t block_id_;
+//   std::vector<u8> new_block_state_;
+// };
 
 /**
  * BlockManager implements a block device to read/write block devices
@@ -39,6 +52,8 @@ protected:
   bool in_memory; // whether we use in-memory to emulate the block manager
   bool maybe_failed;
   usize write_fail_cnt;
+  //! add a new attr which implies whether enable log feature !//
+  bool is_log_enabled;
 
 public:
   /**
@@ -87,6 +102,41 @@ public:
   virtual auto write_block(block_id_t block_id, const u8 *block_data)
       -> ChfsNullResult;
 
+  //[ transaction ]//
+  /**
+   * Write a block to the internal block device.  This is a write-through one,
+   * i.e., no cache.
+   * @param block_id id of the block
+   * @param block_data raw block data
+   * @param tx_ops vector to store block operation
+   */
+  virtual auto write_block_to_memory(block_id_t block_id, const u8 *block_data, std::vector<std::shared_ptr<BlockOperation>> &tx_ops)
+      -> ChfsNullResult;
+
+
+  /**
+   * Read a block to the internal block device.
+   * @param block_id id of the block
+   * @param block_data raw block data buffer to store the result
+   */
+  virtual auto read_block_from_memory(block_id_t block_id, u8 *block_data, std::vector<std::shared_ptr<BlockOperation>> &tx_ops)
+      -> ChfsNullResult;
+
+  virtual auto write_log_entry(usize offset, const u8 *data, usize len) -> ChfsNullResult;
+
+  virtual auto write_block_for_recover(block_id_t block_id, const u8 *block_data)
+      -> ChfsNullResult;
+
+  virtual auto get_log_start() -> u8 *{
+    return block_data + ((block_cnt - 1024) * block_sz);
+  }
+  virtual auto get_log_end() -> u8 *{
+    return block_data + block_cnt * block_sz;
+  }
+  
+  //[ transaction ]//
+  
+
   /**
    * Write a partial block to the internal block device.
    */
@@ -114,7 +164,8 @@ public:
   /**
    * Get the total number of blocks in the block manager
    */
-  auto total_blocks() const -> usize { return this->block_cnt; }
+  //! return different block num !//
+  auto total_blocks() const -> usize { return (is_log_enabled ? this->block_cnt - 1024 : this->block_cnt); }
 
   /**
    * Get the block size of the device managed by the manager
@@ -195,6 +246,14 @@ public:
         this->start_block_id + this->cur_block_off / bm->block_sz;
     return this->bm->write_block(target_block_id, this->buffer.data());
   }
+
+  //[ transaction ]//
+  auto flush_cur_block_atomic(std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsNullResult {
+    auto target_block_id =
+        this->start_block_id + this->cur_block_off / bm->block_sz;
+    return this->bm->write_block_to_memory(target_block_id, this->buffer.data(), tx_ops);
+  }
+  //[ transaction ]//
 
   auto get_cur_byte() const -> u8 {
     return this->buffer[this->cur_block_off % bm->block_sz];

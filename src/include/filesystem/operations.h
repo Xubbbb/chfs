@@ -186,6 +186,66 @@ public:
    */
   auto unlink(inode_id_t parent, const char *name) -> ChfsNullResult;
 
+  // [transaction] //
+  /**
+   * mknode function to create directory or file atomically
+   * 
+   * @param parent the id of the parent
+   * @param name the name of the directory
+   * @param type node type
+   * @param tx_ops vector to store all block operation
+   */
+  auto mknode_atomic(inode_id_t parent, const char *name, InodeType type, std::vector<std::shared_ptr<BlockOperation>> &tx_ops)
+      -> ChfsResult<inode_id_t>;
+
+  /**
+   * Create a inode with a given type atomically
+   * It will allocate a block for the created inode
+   *
+   * @param type the type of the inode
+   * @param tx_ops vector to store all block operation
+   * @return the id of the inode
+   */
+  auto alloc_inode_atomic(InodeType type, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) 
+      -> ChfsResult<inode_id_t>;
+
+  /**
+   * Write the content to the blocks pointed by the inode atomically
+   * If the inode's block is insufficient, we will dynamically allocate more
+   * blocks
+   *
+   * @param id the id of the inode
+   * @param content the content to write
+   * @param tx_ops vector to store all block operation
+   */
+  auto write_file_atomic(inode_id_t, const std::vector<u8> &content, std::vector<std::shared_ptr<BlockOperation>> &tx_ops)
+      -> ChfsNullResult;
+
+  /**
+   * Remove the file named @name from directory @parent.
+   * Free the file's blocks.
+   *
+   * @return  If the file doesn't exist, indicate error ENOENT.
+   * @return  ENOTEMPTY if the deleted file is a directory
+   */
+  auto unlink_atomic(inode_id_t parent, const char *name, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsNullResult;
+
+  /**
+   * Remove the file corresponding to an inode.
+   * It is defined in contorl_op.cc
+   *
+   * @param id the id of the inode
+   * @return whether the remove is ok
+   */
+  auto remove_file_atomic(inode_id_t id, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsNullResult;
+
+  auto lookup_from_memory(inode_id_t, const char *name, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsResult<inode_id_t>;
+
+  auto read_file_from_memory(inode_id_t, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsResult<std::vector<u8>>;
+
+  auto gettype_from_memory(inode_id_t id, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsResult<InodeType>;
+  // [transaction] //
+
 private:
   FileOperation(std::shared_ptr<BlockManager> bm,
                 std::shared_ptr<InodeManager> im,
