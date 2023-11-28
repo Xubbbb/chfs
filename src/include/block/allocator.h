@@ -95,6 +95,31 @@ public:
    *         other error code if there is other error.
    */
   auto deallocate(block_id_t block_id) -> ChfsNullResult;
+
+
+  //[ transaction ]//
+  /**
+   * Allocate a block atomically
+   * 
+   * @param tx_ops vector to store all block operation
+   *
+   * @return the block id of the allocated block if succeed.
+   *         OUT_OF_RESOURCE if there is no free block.
+   *         other error code if there is other error.
+   */
+  auto allocate_atomic(std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsResult<block_id_t>;
+
+  /**
+   * Deallocate a block.
+   * @param block_id the block id to be deallocated.
+   * @param tx_ops vector to store all block operation
+   *
+   * @return INVALID_ARG if the block id is freed.
+   *         other error code if there is other error.
+   */
+  auto deallocate_atomic(block_id_t block_id, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsNullResult;
+
+  //[ transaction ]//
 };
 
 } // namespace chfs

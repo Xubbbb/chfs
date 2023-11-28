@@ -33,12 +33,13 @@ auto ChfsClient::mknode(FileType type, inode_id_t parent,
   //UNIMPLEMENTED();
   auto response = metadata_server_->call("mknode", static_cast<u8>(type), parent, name);
   if(response.is_err()){
-    auto error_code = response.unwrap_error();
-    return ChfsResult<inode_id_t>(error_code);
+    // auto error_code = response.unwrap_error();
+    // return ChfsResult<inode_id_t>(error_code);
+    return ChfsResult<inode_id_t>(ErrorType::NotExist);
   }
   auto inode_id = response.unwrap()->as<inode_id_t>();
   if(inode_id == KInvalidInodeID){
-    auto error_code = ErrorType::INVALID;
+    auto error_code = ErrorType::NotExist;
     return ChfsResult<inode_id_t>(error_code);
   }
   return ChfsResult<inode_id_t>(inode_id);
@@ -69,12 +70,13 @@ auto ChfsClient::lookup(inode_id_t parent, const std::string &name)
   //UNIMPLEMENTED();
   auto response = metadata_server_->call("lookup", parent, name);
   if(response.is_err()){
-    auto error_code = response.unwrap_error();
-    return ChfsResult<inode_id_t>(error_code);
+    // auto error_code = response.unwrap_error();
+    // return ChfsResult<inode_id_t>(error_code);
+    return ChfsResult<inode_id_t>(ErrorType::NotExist);
   }
   auto inode_id = response.unwrap()->as<inode_id_t>();
   if(inode_id == KInvalidInodeID){
-    auto error_code = ErrorType::INVALID;
+    auto error_code = ErrorType::NotExist;
     return ChfsResult<inode_id_t>(error_code);
   }
   return ChfsResult<inode_id_t>(inode_id);
@@ -99,6 +101,9 @@ auto ChfsClient::get_type_attr(inode_id_t id)
     -> ChfsResult<std::pair<InodeType, FileAttr>> {
   // TODO: Implement this function.
   // UNIMPLEMENTED();
+  //!debug//
+  std::cout << "start to get type attr" << std::endl;
+  //!debug//
   auto response = metadata_server_->call("get_type_attr", id);
   if(response.is_err()){
     auto error_code = response.unwrap_error();
@@ -211,8 +216,12 @@ auto ChfsClient::write_file(inode_id_t id, usize offset, std::vector<u8> data)
 
   if(offset + write_length > old_file_sz){
     //...if we need to alloc enough block first, then to write...//
-    auto new_block_num = ((offset + write_length) % BLOCK_SIZE) ? ((offset + write_length) / BLOCK_SIZE + 1) : ((offset + write_length) % BLOCK_SIZE);
+    auto new_block_num = ((offset + write_length) % BLOCK_SIZE) ? ((offset + write_length) / BLOCK_SIZE + 1) : ((offset + write_length) / BLOCK_SIZE);
     auto old_block_num = block_info_vec.size();
+    //!debug//
+    std::cout << "offset: " << offset << "write_length: " <<write_length << std::endl;
+    std::cout << "new_block_num: "<<new_block_num << "old_block_num: "<< old_block_num << std::endl;
+    //!debug//
     // alloc some new block
     for(auto i = old_block_num;i < new_block_num;++i){
       auto alloc_response = metadata_server_->call("alloc_block", id);
@@ -233,6 +242,9 @@ auto ChfsClient::write_file(inode_id_t id, usize offset, std::vector<u8> data)
   auto write_start_offset = offset % BLOCK_SIZE;
   auto write_end_idx = ((offset + write_length) % BLOCK_SIZE) ? ((offset + write_length) / BLOCK_SIZE + 1) : ((offset + write_length) / BLOCK_SIZE);
   auto write_end_offset = ((offset + write_length) % BLOCK_SIZE) ? ((offset + write_length) % BLOCK_SIZE) : BLOCK_SIZE;
+  //!debug//
+  std::cout << "write file:" << write_start_idx << " "<<write_start_offset<<" "<<write_end_idx<<" "<<write_end_offset << " "<<block_info_vec.size() <<std::endl;
+  //!debug//
   usize current_offset = 0;
   for(auto it = block_info_vec.begin() + write_start_idx;it != block_info_vec.begin() + write_end_idx;++it){
     block_id_t block_id = std::get<0>(*it);
@@ -287,6 +299,9 @@ auto ChfsClient::write_file(inode_id_t id, usize offset, std::vector<u8> data)
       return ChfsNullResult(error_code);
     }
   }
+  //!debug//
+  std::cout << "write done" << std::endl;
+  //!debug//
   return KNullOk;
   //...if we don't need to alloc more block...//
 }
