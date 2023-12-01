@@ -301,7 +301,7 @@ Hints:
 * Don't forget to marshall and unmarshall custom data structures.
 * The test cases may fail due to the bug from part 1.
 
-## Part 3 - Log Persistency
+### Part 3 - Log Persistency
 
 In this part, you will persist the states of a Raft node. Check Figure 2 in the Raft paper again, to figure out what should be persisted.
 
@@ -329,7 +329,7 @@ Hints:
 * You can use multiple files to persist different data (e.g. a file for metadata and the other for logs).
 * To persist the command, you can use the `serialize` and `deserialize` interfaces of the `ChfsCommand`.
 
-## Part 4 - Snapshot 
+### Part 4 - Snapshot 
 
 In this part, you will implement the snapshot mechanism of the Raft algorithm. You can refer to Figure 13 in the Raft extended paper. 
 
@@ -352,3 +352,12 @@ Hints:
 * To make the code clear, you can use two concepts for the log index: physical index (e.g. the index of the `std::vector`) and logical index (e.g. physical index + snapshot index). 
 * This part may introduce many changes to your code base. So you'd better commit your codes before this part. 
 
+## Handin 
+
+Execute the following command under `scripts/lab3` directory:
+
+```bash
+./handin.sh
+```
+
+Then you will see a `handin.tgz` file under the root directory of this project. Please rename it in the format of: `lab3_[your student id].tgz`, and upload this `.tgz` file to Canvas.
