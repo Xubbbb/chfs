@@ -113,4 +113,72 @@ err_ret:
   return ChfsNullResult(error_code);
 }
 
+//[ transaction ]//
+auto FileOperation::remove_file_atomic(inode_id_t id, std::vector<std::shared_ptr<BlockOperation>> &tx_ops) -> ChfsNullResult{
+  auto error_code = ErrorType::DONE;
+  const auto block_size = this->block_manager_->block_size();
+
+  std::vector<u8> inode(block_size);
+
+  std::vector<block_id_t> free_set;
+
+  auto inode_p = reinterpret_cast<Inode *>(inode.data());
+  auto inode_res = this->inode_manager_->read_inode_from_memory(id, inode, tx_ops);
+  if (inode_res.is_err()) {
+    error_code = inode_res.unwrap_error();
+    // I know goto is bad, but we have no choice
+    goto err_ret;
+  }
+
+  for (uint i = 0; i < inode_p->get_direct_block_num(); ++i) {
+    if (inode_p->blocks[i] == KInvalidBlockID) {
+      break;
+    }
+    free_set.push_back(inode_p->blocks[i]);
+  }
+
+  if (inode_p->blocks[inode_p->get_direct_block_num()] != KInvalidBlockID) {
+    // we still need to release the indirect block
+    std::vector<u8> indirect_block;
+    auto read_res = this->block_manager_->read_block_from_memory(
+        inode_p->blocks[inode_p->get_direct_block_num()],
+        indirect_block.data(), tx_ops);
+    if (read_res.is_err()) {
+      error_code = read_res.unwrap_error();
+      goto err_ret;
+    }
+
+    auto block_p = reinterpret_cast<block_id_t *>(indirect_block.data());
+    for (uint i = 0;
+         i < this->block_manager_->block_size() / sizeof(block_id_t); ++i) {
+      if (block_p[i] == KInvalidBlockID) {
+        break;
+      } else {
+        free_set.push_back(block_p[i]);
+      }
+    }
+  }
+
+  // First we free the inode
+  {
+    auto res = this->inode_manager_->free_inode_atomic(id, tx_ops);
+    if (res.is_err()) {
+      error_code = res.unwrap_error();
+      goto err_ret;
+    }
+    free_set.push_back(inode_res.unwrap());
+  }
+
+  // now free the blocks
+  for (auto bid : free_set) {
+    auto res = this->block_allocator_->deallocate_atomic(bid, tx_ops);
+    if (res.is_err()) {
+      return res;
+    }
+  }
+  return KNullOk;
+err_ret:
+  return ChfsNullResult(error_code);
+}
+//[ transaction ]//
 } // namespace chfs

@@ -5,7 +5,8 @@ source $PARENT_DIR/set-env.sh
 
 ulimit -c unlimited
 
-CHFSDIR1=$ROOT_PATH/mnt
+#CHFSDIR1=$ROOT_PATH/mnt
+CHFSDIR1=/tmp/mnt
 
 rm -rf $CHFSDIR1
 mkdir $CHFSDIR1 || exit 1
