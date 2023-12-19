@@ -153,17 +153,30 @@ struct AppendEntriesReply {
 
 struct InstallSnapshotArgs {
     /* Lab3: Your code here */
+    int term;
+    int leaderId;
+    int lastIncludedIndex;
+    int lastIncludedTerm;
+    int offset;
+    std::vector<u8> data;
+    bool done;
 
     MSGPACK_DEFINE(
-    
+        term,
+        leaderId,
+        lastIncludedIndex,
+        lastIncludedTerm,
+        offset,
+        data,
+        done
     )
 };
 
 struct InstallSnapshotReply {
     /* Lab3: Your code here */
-
+    int term;
     MSGPACK_DEFINE(
-    
+        term
     )
 };
 

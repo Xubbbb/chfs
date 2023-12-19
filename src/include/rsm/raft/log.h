@@ -21,7 +21,8 @@ public:
     /* Lab3: Your code here */
     void updateMetaData(int current_term, int voted_for);
     void updateLogs(std::vector<LogEntry<Command>> &data);
-    void recover(int &current_term, int &voted_for, std::vector<LogEntry<Command>> &data);
+    void updateSnapshot(std::vector<u8> &data);
+    void recover(int &current_term, int &voted_for, std::vector<LogEntry<Command>> &data, std::vector<u8> &snapshot_data, int &snapshot_last_index, int &snapshot_last_term);
 
 private:
     std::shared_ptr<BlockManager> bm_;
@@ -53,6 +54,10 @@ RaftLog<Command>::RaftLog(std::shared_ptr<BlockManager> bm, bool is_recover)
         if(log_res.is_err() || (log_res.unwrap() != 2)){
             std:: cout << "Init log's file Error!" << std::endl;
         }
+        auto snapshot_res = fs_->alloc_inode(InodeType::FILE);
+        if(snapshot_res.is_err() || (snapshot_res.unwrap() != 3)){
+            std:: cout << "Init snapshot's file Error!" << std::endl;
+        }
     }
 }
 
@@ -81,18 +86,30 @@ void RaftLog<Command>::updateLogs(std::vector<LogEntry<Command>> &data){
 }
 
 template <typename Command>
-void RaftLog<Command>::recover(int &current_term, int &voted_for, std::vector<LogEntry<Command>> &data){
+void RaftLog<Command>::updateSnapshot(std::vector<u8> &data){
+    std::unique_lock<std::mutex> lock(mtx);
+    fs_->write_file(3, data);
+    //std::cout << "update snapshot success" << std::endl;
+}
+
+template <typename Command>
+void RaftLog<Command>::recover(int &current_term, int &voted_for, std::vector<LogEntry<Command>> &node_log, std::vector<u8> &node_snapshot, int &snapshot_last_index, int &snapshot_last_term){
     std::unique_lock<std::mutex> lock(mtx);
     auto meta_res = fs_->read_file(1);
     auto log_res = fs_->read_file(2);
+    auto snapshot_res = fs_->read_file(3);
     if(meta_res.is_err()){
         std::cout << "recover meta fail" << std::endl;
     }
     if(log_res.is_err()){
         std::cout << "recover log fail" << std::endl;
     }
+    if(snapshot_res.is_err()){
+        std::cout << "recover snapshot fail" << std::endl;
+    }
     auto meta_data = meta_res.unwrap();
     auto log_data = log_res.unwrap();
+    auto snapshot_data = snapshot_res.unwrap();
     // recover meta
     auto meta = reinterpret_cast<int*>(meta_data.data());
     current_term = meta[0];
@@ -101,10 +118,14 @@ void RaftLog<Command>::recover(int &current_term, int &voted_for, std::vector<Lo
     int log_size = log_data.size();
     int log_entry_num = log_size / sizeof(LogEntry<Command>);
     auto log_entry_data = reinterpret_cast<LogEntry<Command>*>(log_data.data());
-    data.clear();
+    node_log.clear();
     for(int i = 0; i < log_entry_num; ++i){
-        data.push_back(log_entry_data[i]);
+        node_log.push_back(log_entry_data[i]);
     }
+    // recover snapshot
+    node_snapshot = snapshot_data;
+    snapshot_last_index = node_log[0].index;
+    snapshot_last_term = node_log[0].term;
 }
 
 template <typename Command>

@@ -59,7 +59,7 @@ public:
     int rpc_count();
     std::vector<u8> get_snapshot_direct();
 
-// private:
+private:
     /* 
      * Start the raft node.
      * Please make sure all of the rpc request handlers have been registered before this method.
@@ -146,12 +146,24 @@ public:
     int received_votes;
     int commit_index;
     int last_applied;
+    int snapshot_last_index;
+    int snapshot_last_term;
 
     unsigned long last_receive_timestamp;
     std::unique_ptr<int[]> next_index;
     std::unique_ptr<int[]> match_index;
     // Just a list in memory, volatile
     std::vector<LogEntry<Command>> log_entry_list;
+    //snapshot
+    std::vector<u8> last_snapshot;
+    
+    int logic2physical(int logic_index){
+        return logic_index - snapshot_last_index;
+    }
+    
+    int physical2logic(int physical_index){
+        return physical_index + snapshot_last_index;
+    }
 
 };
 
@@ -167,7 +179,9 @@ RaftNode<StateMachine, Command>::RaftNode(int node_id, std::vector<RaftNodeConfi
     voted_for(-1),
     received_votes(0),
     commit_index(0),
-    last_applied(0)
+    last_applied(0),
+    snapshot_last_index(0),
+    snapshot_last_term(0)
 {
     auto my_config = node_configs[my_id];
 
@@ -203,6 +217,7 @@ RaftNode<StateMachine, Command>::RaftNode(int node_id, std::vector<RaftNodeConfi
     init_entry.term = 0;
     init_entry.index = 0;
     log_entry_list.push_back(init_entry);
+    last_snapshot = state->snapshot();
 
     // RaftLog for persistence
     std::string node_log_filename = "/tmp/raft_log/node" + std::to_string(node_id);
@@ -210,11 +225,15 @@ RaftNode<StateMachine, Command>::RaftNode(int node_id, std::vector<RaftNodeConfi
     auto block_manager = std::shared_ptr<BlockManager>(new BlockManager(node_log_filename));
     log_storage = std::make_unique<RaftLog<Command>>(block_manager, is_recover);
     if(is_recover){
-        log_storage->recover(current_term, voted_for, log_entry_list);
+        log_storage->recover(current_term, voted_for, log_entry_list, last_snapshot, snapshot_last_index, snapshot_last_term);
+        state->apply_snapshot(last_snapshot);
+        last_applied = snapshot_last_index;
+        commit_index = snapshot_last_index;
     }
     else{
         log_storage->updateMetaData(current_term, voted_for);
         log_storage->updateLogs(log_entry_list);
+        log_storage->updateSnapshot(last_snapshot);
     }
 
     RAFT_LOG("A new raft node init");
@@ -308,7 +327,7 @@ auto RaftNode<StateMachine, Command>::new_command(std::vector<u8> cmd_data, int 
     }
     else{
         LogEntry<Command> logEntry;
-        logEntry.index = log_entry_list.size();
+        logEntry.index = physical2logic(log_entry_list.size());
         logEntry.term = current_term;
         Command command;
         int command_size = command.size();
@@ -326,6 +345,24 @@ template <typename StateMachine, typename Command>
 auto RaftNode<StateMachine, Command>::save_snapshot() -> bool
 {
     /* Lab3: Your code here */ 
+    std::unique_lock<std::mutex> lock(mtx);
+    int start_index = logic2physical(last_applied);
+    snapshot_last_term = log_entry_list[logic2physical(last_applied)].term;
+    snapshot_last_index = last_applied;
+    last_snapshot = state->snapshot();
+
+    std::vector<LogEntry<Command>> new_log_entry_list;
+    for(int i = start_index;i < log_entry_list.size();++i){
+        new_log_entry_list.push_back(log_entry_list[i]);
+    }
+    log_entry_list = new_log_entry_list;
+
+    log_storage->updateSnapshot(last_snapshot);
+    log_storage->updateLogs(log_entry_list);
+    //!debug//
+    RAFT_LOG("Save snapshot success, snapshot_last_index: %d, snapshot_last_term: %d, log_entry_list size: %lu", snapshot_last_index, snapshot_last_term, log_entry_list.size());
+    //!debug//
+
     return true;
 }
 
@@ -333,7 +370,7 @@ template <typename StateMachine, typename Command>
 auto RaftNode<StateMachine, Command>::get_snapshot() -> std::vector<u8>
 {
     /* Lab3: Your code here */
-    return std::vector<u8>();
+    return state->snapshot();
 }
 
 /******************************************************************
@@ -379,13 +416,13 @@ auto RaftNode<StateMachine, Command>::request_vote(RequestVoteArgs args) -> Requ
     current_term = args.term;
     voted_for = -1;
     if(log_entry_list[log_entry_list.size() - 1].term > args.lastLogTerm
-        || (log_entry_list[log_entry_list.size() - 1].term == args.lastLogTerm && (log_entry_list.size() - 1) > args.lastLogIndex)){
+        || (log_entry_list[log_entry_list.size() - 1].term == args.lastLogTerm && physical2logic(log_entry_list.size() - 1) > args.lastLogIndex)){
         /**
          * This means that candidate’s log is NOT at
          * least as up-to-date as receiver’s log
         */
         //!debug//
-        RAFT_LOG("Refuse to vote to %d, because I am newer!", args.candidateId);
+        RAFT_LOG("Refuse to vote to %d, because I am newer! args.lastLogTerm: %d, args.lastLogIndex: %d, my last term: %d, my last index: %d", args.candidateId, args.lastLogTerm, args.lastLogIndex, log_entry_list[log_entry_list.size() - 1].term, physical2logic(log_entry_list.size() - 1));
         //!debug//
         RequestVoteReply reply;
         reply.voteFollowerId = my_id;
@@ -445,7 +482,7 @@ void RaftNode<StateMachine, Command>::handle_request_vote_reply(int target, cons
              * match_index:initialized to 0, increases monotonically
             */
             for(int i = 0;i < node_configs.size();++i){
-                next_index[i] = log_entry_list.size();
+                next_index[i] = physical2logic(log_entry_list.size());
                 match_index[i] = 0;
             }
         }
@@ -480,7 +517,17 @@ auto RaftNode<StateMachine, Command>::append_entries(RpcAppendEntriesArgs rpc_ar
          * Reply false if log doesn’t contain an entry at prevLogIndex
          * whose term matches prevLogTerm
         */
-        if(log_entry_list.size() - 1 < arg.prevLogIndex || log_entry_list[arg.prevLogIndex].term != arg.prevLogTerm ){
+        /**
+         * After we introduce the snapshot, we will face a problem: 
+         * If arg.prevLogIndex is smaller than snapshot_last_index,
+         * how can we access log_entry_list[arg.prevLogIndex].term?
+         * If arg.prevLogIndex smaller than snapshot_last_index,
+         * it means that the log_entry_list[arg.prevLogIndex] is committed and applied to the state machine.
+         * so it must be the same as arg.prevLogTerm. If arg.prevLogIndex is bigger than snapshot_last_index,
+         * than we can access log_entry_list[arg.prevLogIndex].term
+        */
+        if(physical2logic(log_entry_list.size() - 1) < arg.prevLogIndex ||
+            (logic2physical(arg.prevLogIndex) >= 0 && log_entry_list[logic2physical(arg.prevLogIndex)].term != arg.prevLogTerm)){
             //!debug//
             //RAFT_LOG("Reply false! my last index:%lu, my last term:%d, prevLogIndex:%d, prevLogTerm:%d", log_entry_list.size() - 1, log_entry_list[log_entry_list.size() - 1].term, arg.prevLogIndex, arg.prevLogTerm);
             //!debug//
@@ -493,22 +540,109 @@ auto RaftNode<StateMachine, Command>::append_entries(RpcAppendEntriesArgs rpc_ar
              * Follower and Leader. So we just need to append new entries from (prevIndex + 1)
              * If Follower has inconsitent entry, discard them
             */
-            log_entry_list.resize(arg.prevLogIndex + 1);
-            std::vector<LogEntry<Command>> new_entry_list = arg.logEntryList;
-            for(const LogEntry<Command> &entry : new_entry_list){
-                log_entry_list.push_back(entry);
+
+            // log_entry_list.resize(arg.prevLogIndex + 1);
+            // std::vector<LogEntry<Command>> new_entry_list = arg.logEntryList;
+            // for(const LogEntry<Command> &entry : new_entry_list){
+            //     log_entry_list.push_back(entry);
+            // }
+            // is_log_changed = true;
+            // /**
+            //  * If leaderCommit > commitIndex, set commitIndex =
+            //  * min(leaderCommit, index of last new entry)
+            // */
+            // int last_new_entry_index = log_entry_list.size() - 1;
+            // if(arg.leaderCommit > commit_index){
+            //     commit_index = arg.leaderCommit < last_new_entry_index ? arg.leaderCommit : last_new_entry_index;
+            // }
+            // reply.term = current_term;
+            // reply.success = true;
+
+            if(arg.logEntryList.empty()){
+                // This is a heartbeat
+                // int last_new_entry_index = physical2logic(log_entry_list.size() - 1);
+                int last_new_entry_index = arg.prevLogIndex;
+                if(arg.leaderCommit > commit_index){
+                    commit_index = arg.leaderCommit < last_new_entry_index ? arg.leaderCommit : last_new_entry_index;
+                }
+                reply.term = current_term;
+                reply.success = true;
             }
-            is_log_changed = true;
-            /**
-             * If leaderCommit > commitIndex, set commitIndex =
-             * min(leaderCommit, index of last new entry)
-            */
-            int last_new_entry_index = log_entry_list.size() - 1;
-            if(arg.leaderCommit > commit_index){
-                commit_index = arg.leaderCommit < last_new_entry_index ? arg.leaderCommit : last_new_entry_index;
+            else{ // This is a real append entries
+                // Obey the rule, we first check which entry is
+                // the first entry different from leader's, and then erase all entries behind it.
+                // then append leader's entries
+                std::vector<LogEntry<Command>> new_entry_list = arg.logEntryList;
+                if(new_entry_list[0].index > snapshot_last_index){
+                    auto new_it = new_entry_list.begin();
+                    auto log_it = log_entry_list.begin() + logic2physical(new_entry_list[0].index);
+                    for(;;++new_it, ++log_it){
+                        if(log_it == log_entry_list.end()){
+                            for(;new_it != new_entry_list.end();++new_it){
+                                log_entry_list.push_back(*new_it);
+                                is_log_changed = true;
+                            }
+                            break;
+                        }
+                        if(new_it == new_entry_list.end()){
+                            // This means that all entries in new_entry_list are the same as log_entry_list
+                            break;
+                        }
+                        if(log_it->term != new_it->term){
+                            // This means that the first entry different from leader's is found
+                            log_entry_list.erase(log_it, log_entry_list.end());
+                            is_log_changed = true;
+                            for(;new_it != new_entry_list.end();++new_it){
+                                log_entry_list.push_back(*new_it);
+                            }
+                            break;
+                        }
+                    }
+                }
+                else{
+                    // This means a part of new_entry_list is in snapshot,
+                    // so we need to erase the part of new_entry_list which is in snapshot
+                    // We can promise that the entry in snapshot is the same as leader's
+                    
+                    // 1. If all new_entry_list is in snapshot, we don't need to do anything
+                    if(new_entry_list[new_entry_list.size() - 1].index <= snapshot_last_index){
+                        // This means that all entries in new_entry_list are in snapshot
+                    }
+                    // 2. If a part of new_entry_list in snapshot
+                    else{
+                        auto log_it = log_entry_list.begin() + 1;
+                        auto new_it = new_entry_list.begin() + (snapshot_last_index + 1 - new_entry_list[0].index);
+                        for(;;++new_it, ++log_it){
+                            if(log_it == log_entry_list.end()){
+                                for(;new_it != new_entry_list.end();++new_it){
+                                    log_entry_list.push_back(*new_it);
+                                    is_log_changed = true;
+                                }
+                                break;
+                            }
+                            if(new_it == new_entry_list.end()){
+                                // This means that all entries in new_entry_list are the same as log_entry_list
+                                break;
+                            }
+                            if(log_it->term != new_it->term){
+                                // This means that the first entry different from leader's is found
+                                log_entry_list.erase(log_it, log_entry_list.end());
+                                is_log_changed = true;
+                                for(;new_it != new_entry_list.end();++new_it){
+                                    log_entry_list.push_back(*new_it);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                int last_new_entry_index = physical2logic(log_entry_list.size() - 1);
+                if(arg.leaderCommit > commit_index){
+                    commit_index = arg.leaderCommit < last_new_entry_index ? arg.leaderCommit : last_new_entry_index;
+                }
+                reply.term = current_term;
+                reply.success = true;
             }
-            reply.term = current_term;
-            reply.success = true;
         }
     }
     else if(arg.term == current_term){
@@ -517,11 +651,8 @@ auto RaftNode<StateMachine, Command>::append_entries(RpcAppendEntriesArgs rpc_ar
             last_receive_timestamp = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now()).time_since_epoch().count();
         }
         role = RaftRole::Follower;
-        /**
-         * Reply false if log doesn’t contain an entry at prevLogIndex
-         * whose term matches prevLogTerm
-        */
-        if(log_entry_list.size() - 1 < arg.prevLogIndex || log_entry_list[arg.prevLogIndex].term != arg.prevLogTerm ){
+        if(physical2logic(log_entry_list.size() - 1) < arg.prevLogIndex ||
+            (logic2physical(arg.prevLogIndex) >= 0 && log_entry_list[logic2physical(arg.prevLogIndex)].term != arg.prevLogTerm)){
             //!debug//
             //RAFT_LOG("Reply false! my last index:%lu, my last term:%d, prevLogIndex:%d, prevLogTerm:%d", log_entry_list.size() - 1, log_entry_list[log_entry_list.size() - 1].term, arg.prevLogIndex, arg.prevLogTerm);
             //!debug//
@@ -529,37 +660,95 @@ auto RaftNode<StateMachine, Command>::append_entries(RpcAppendEntriesArgs rpc_ar
             reply.success = false;
         }
         else{
-            /**
-             * Now we promise that the entry before(including) prevLog is the same between 
-             * Follower and Leader. So we just need to append new entries from (prevIndex + 1)
-             * If Follower has inconsitent entry, discard them
-            */
-            /**
-             * But there is a very corner case here, if it receives a empty list(heartbeat)
-             * do we need to erase behind?
-            */
-            log_entry_list.resize(arg.prevLogIndex + 1);
-            std::vector<LogEntry<Command>> new_entry_list = arg.logEntryList;
-            for(const LogEntry<Command> &entry : new_entry_list){
-                log_entry_list.push_back(entry);
+            if(arg.logEntryList.empty()){
+                // This is a heartbeat
+                // int last_new_entry_index = physical2logic(log_entry_list.size() - 1);
+                int last_new_entry_index = arg.prevLogIndex;
+                if(arg.leaderCommit > commit_index){
+                    commit_index = arg.leaderCommit < last_new_entry_index ? arg.leaderCommit : last_new_entry_index;
+                }
+                reply.term = current_term;
+                reply.success = true;
             }
-            is_log_changed = true;
-            //!debug//
-            //RAFT_LOG("log entry list size now:%lu, arg.prevLogIndex: %d, entry list size: %lu", log_entry_list.size(), arg.prevLogIndex, new_entry_list.size());
-            //!debug//
-            /**
-             * If leaderCommit > commitIndex, set commitIndex =
-             * min(leaderCommit, index of last new entry)
-            */
-            int last_new_entry_index = log_entry_list.size() - 1;
-            if(arg.leaderCommit > commit_index){
-                commit_index = arg.leaderCommit < last_new_entry_index ? arg.leaderCommit : last_new_entry_index;
+            else{ // This is a real append entries
+                // Obey the rule, we first check which entry is
+                // the first entry different from leader's, and then erase all entries behind it.
+                // then append leader's entries
+                std::vector<LogEntry<Command>> new_entry_list = arg.logEntryList;
+                if(new_entry_list[0].index > snapshot_last_index){
+                    auto new_it = new_entry_list.begin();
+                    auto log_it = log_entry_list.begin() + logic2physical(new_entry_list[0].index);
+                    for(;;++new_it, ++log_it){
+                        if(log_it == log_entry_list.end()){
+                            for(;new_it != new_entry_list.end();++new_it){
+                                log_entry_list.push_back(*new_it);
+                                is_log_changed = true;
+                            }
+                            break;
+                        }
+                        if(new_it == new_entry_list.end()){
+                            // This means that all entries in new_entry_list are the same as log_entry_list
+                            break;
+                        }
+                        if(log_it->term != new_it->term){
+                            // This means that the first entry different from leader's is found
+                            log_entry_list.erase(log_it, log_entry_list.end());
+                            is_log_changed = true;
+                            for(;new_it != new_entry_list.end();++new_it){
+                                log_entry_list.push_back(*new_it);
+                            }
+                            break;
+                        }
+                    }
+                }
+                else{
+                    // This means a part of new_entry_list is in snapshot,
+                    // so we need to erase the part of new_entry_list which is in snapshot
+                    // We can promise that the entry in snapshot is the same as leader's
+                    
+                    // 1. If all new_entry_list is in snapshot, we don't need to do anything
+                    if(new_entry_list[new_entry_list.size() - 1].index <= snapshot_last_index){
+                        // This means that all entries in new_entry_list are in snapshot
+                    }
+                    // 2. If a part of new_entry_list in snapshot
+                    else{
+                        auto log_it = log_entry_list.begin() + 1;
+                        auto new_it = new_entry_list.begin() + (snapshot_last_index + 1 - new_entry_list[0].index);
+                        for(;;++new_it, ++log_it){
+                            if(log_it == log_entry_list.end()){
+                                for(;new_it != new_entry_list.end();++new_it){
+                                    log_entry_list.push_back(*new_it);
+                                    is_log_changed = true;
+                                }
+                                break;
+                            }
+                            if(new_it == new_entry_list.end()){
+                                // This means that all entries in new_entry_list are the same as log_entry_list
+                                break;
+                            }
+                            if(log_it->term != new_it->term){
+                                // This means that the first entry different from leader's is found
+                                log_entry_list.erase(log_it, log_entry_list.end());
+                                is_log_changed = true;
+                                for(;new_it != new_entry_list.end();++new_it){
+                                    log_entry_list.push_back(*new_it);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                int last_new_entry_index = physical2logic(log_entry_list.size() - 1);
+                if(arg.leaderCommit > commit_index){
+                    commit_index = arg.leaderCommit < last_new_entry_index ? arg.leaderCommit : last_new_entry_index;
+                }
+                reply.term = current_term;
+                reply.success = true;
             }
-            reply.term = current_term;
-            reply.success = true;
         }
     }
     else{
+        // This means this leader is out of date
         reply.term = current_term;
         reply.success = false;
     }
@@ -591,7 +780,7 @@ void RaftNode<StateMachine, Command>::handle_append_entries_reply(int node_id, c
         current_term = reply.term;
         voted_for = -1;
         //!debug//
-        RAFT_LOG("I am follower now");
+        RAFT_LOG("I am follower now because %d is newer than me!", node_id);
         //!debug//
         //[ persistency ]//
         log_storage->updateMetaData(current_term, voted_for);
@@ -631,7 +820,7 @@ void RaftNode<StateMachine, Command>::handle_append_entries_reply(int node_id, c
         //! Because a former reply can be received later!!!
         int reply_match_index = arg.prevLogIndex + arg.logEntryList.size();
         if(reply_match_index > match_index[node_id]){
-            match_index[node_id] = arg.prevLogIndex + arg.logEntryList.size();
+            match_index[node_id] = reply_match_index;
         }
         //!debug//
         //RAFT_LOG("%d's next_index old:%d, new:%d", node_id, next_index[node_id], match_index[node_id] + 1);
@@ -642,9 +831,9 @@ void RaftNode<StateMachine, Command>::handle_append_entries_reply(int node_id, c
          * of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N 
         */
         const auto MACHINE_NUM = rpc_clients_map.size();
-        const auto LAST_INDEX = log_entry_list.size() - 1;
+        const auto LAST_INDEX = log_entry_list[log_entry_list.size() - 1].index;
         for(int N = LAST_INDEX;N > commit_index;--N){
-            if(log_entry_list[N].term != current_term){
+            if(log_entry_list[logic2physical(N)].term != current_term){
                 break;
             }
             // This node itself must match
@@ -672,9 +861,75 @@ void RaftNode<StateMachine, Command>::handle_append_entries_reply(int node_id, c
 
 template <typename StateMachine, typename Command>
 auto RaftNode<StateMachine, Command>::install_snapshot(InstallSnapshotArgs args) -> InstallSnapshotReply
-{
+{   
     /* Lab3: Your code here */
-    return InstallSnapshotReply();
+    std::unique_lock<std::mutex> lock(mtx);
+    bool is_meta_changed = false;
+    if(args.term < current_term){
+        InstallSnapshotReply reply;
+        reply.term = current_term;
+        return reply;
+    }
+    role = RaftRole::Follower;
+    if(args.term > current_term){
+        voted_for = -1;
+        current_term = args.term;
+        is_meta_changed = true;
+    }
+    leader_id = args.leaderId;
+    last_receive_timestamp = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now()).time_since_epoch().count();
+    // For convenience, we will send all snapshot data in one RPC
+    if(snapshot_last_index >= args.lastIncludedIndex){
+        // This means this snapshot is out of date, don't need to apply it
+        InstallSnapshotReply reply;
+        reply.term = current_term;
+        if(is_meta_changed){
+            //[ persistency ]//
+            log_storage->updateMetaData(current_term, voted_for);
+            //[ persistency ]//
+        }
+        return reply;
+    }
+    //If existing log entry has same index and term as snapshot’s
+    //last included entry, retain log entries following it and reply
+    if(logic2physical(args.lastIncludedIndex) < log_entry_list.size()
+        && log_entry_list[logic2physical(args.lastIncludedIndex)].term == args.lastIncludedTerm){
+        // remove in snapshot log
+        log_entry_list.erase(log_entry_list.begin() + 1, log_entry_list.begin() + (logic2physical(args.lastIncludedIndex) + 1));
+        log_entry_list[0].term = args.lastIncludedTerm;
+        log_entry_list[0].index = args.lastIncludedIndex;
+        snapshot_last_index = args.lastIncludedIndex;
+        snapshot_last_term = args.lastIncludedTerm;
+        state->apply_snapshot(args.data);
+        last_snapshot = args.data;
+        last_applied = args.lastIncludedIndex;
+        commit_index = (commit_index < args.lastIncludedIndex) ? args.lastIncludedIndex : commit_index;
+    }
+    // Else discard the entire log
+    else{
+        log_entry_list.clear();
+        LogEntry<Command> init_entry;
+        init_entry.term = args.lastIncludedTerm;
+        init_entry.index = args.lastIncludedIndex;
+        log_entry_list.push_back(init_entry);
+        snapshot_last_index = args.lastIncludedIndex;
+        snapshot_last_term = args.lastIncludedTerm;
+        state->apply_snapshot(args.data);
+        last_snapshot = args.data;
+        last_applied = args.lastIncludedIndex;
+        commit_index = args.lastIncludedIndex;
+    }
+
+    //[ persistency ]//
+    if(is_meta_changed){
+        log_storage->updateMetaData(current_term, voted_for);
+    }
+    log_storage->updateLogs(log_entry_list);
+    log_storage->updateSnapshot(last_snapshot);
+    //[ persistency ]//
+    InstallSnapshotReply reply;
+    reply.term = current_term;
+    return reply;
 }
 
 
@@ -682,6 +937,41 @@ template <typename StateMachine, typename Command>
 void RaftNode<StateMachine, Command>::handle_install_snapshot_reply(int node_id, const InstallSnapshotArgs arg, const InstallSnapshotReply reply)
 {
     /* Lab3: Your code here */
+    std::unique_lock<std::mutex> lock(mtx);
+    last_receive_timestamp = std::chrono::time_point_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now()).time_since_epoch().count();
+    if(reply.term > current_term){
+        role = RaftRole::Follower;
+        current_term = reply.term;
+        voted_for = -1;
+        //!debug//
+        RAFT_LOG("I am follower now because %d is newer than me!", node_id);
+        //!debug//
+        //[ persistency ]//
+        log_storage->updateMetaData(current_term, voted_for);
+        //[ persistency ]//
+        return;
+    }
+    if(role != RaftRole::Leader){
+        // If this server has been not a leader anymore, it don't have ability to do anything about this reply.
+        return;
+    }
+    if(reply.term > arg.term){
+        // This means this snapshot is out of date
+        return;
+    }
+    if(next_index[node_id] > arg.lastIncludedIndex){
+        // This means this snapshot reply is out of date
+        //! but we can predict that this is rare to happen
+        //!debug//
+        RAFT_LOG("A snapshot reply is out of date");
+        //!debug//
+        return;
+    }
+    match_index[node_id] = arg.lastIncludedIndex;
+    next_index[node_id] = arg.lastIncludedIndex + 1;
+    //!debug//
+    //RAFT_LOG("receive snapshot reply from %d, match_index: %d, next_index: %d", node_id, match_index[node_id], next_index[node_id]);
+    //!debug//
     return;
 }
 
@@ -800,8 +1090,8 @@ void RaftNode<StateMachine, Command>::run_background_election() {
                     vote_request.term = current_term;
                     vote_request.candidateId = my_id;
                     // TODO: last log index & last log term
-                    vote_request.lastLogIndex = log_entry_list.size() - 1;
-                    vote_request.lastLogTerm = log_entry_list[vote_request.lastLogIndex].term;
+                    vote_request.lastLogIndex = log_entry_list[log_entry_list.size() - 1].index;
+                    vote_request.lastLogTerm = log_entry_list[log_entry_list.size() - 1].term;
                     thread_pool->enqueue(&RaftNode::send_request_vote, this, target_id, vote_request);
                 }
                 //[ persistency ]//
@@ -834,29 +1124,65 @@ void RaftNode<StateMachine, Command>::run_background_commit() {
                     if(map_it->first == my_id){
                         continue;
                     }
-                    if(next_index[map_it->first] < log_entry_list.size()){
-                        //!debug//
-                        //RAFT_LOG("%d machine's next index is %d, log entry list size:%zu", map_it->first, next_index[map_it->first], log_entry_list.size());
-                        //!debug//
-                        std::vector<LogEntry<Command>> append_entry_list;
-                        append_entry_list.clear();
-                        for(int i = next_index[map_it->first];i < log_entry_list.size();++i){
-                            append_entry_list.push_back(log_entry_list[i]);
+                    // [used for no snapshot] //
+                    // if(next_index[map_it->first] < log_entry_list.size()){
+                    //     //!debug//
+                    //     //RAFT_LOG("%d machine's next index is %d, log entry list size:%zu", map_it->first, next_index[map_it->first], log_entry_list.size());
+                    //     //!debug//
+                    //     std::vector<LogEntry<Command>> append_entry_list;
+                    //     append_entry_list.clear();
+                    //     for(int i = next_index[map_it->first];i < log_entry_list.size();++i){
+                    //         append_entry_list.push_back(log_entry_list[i]);
+                    //     }
+                    //     AppendEntriesArgs<Command> args;
+                    //     args.term = current_term;
+                    //     args.leaderId = my_id;
+                    //     args.prevLogIndex = next_index[map_it->first] - 1;
+                    //     //!debug//
+                    //     //RAFT_LOG("send request to %d node, prev log index: %d", map_it->first, args.prevLogIndex);
+                    //     //!debug//
+                    //     args.prevLogTerm = log_entry_list[args.prevLogIndex].term;
+                    //     args.leaderCommit = commit_index;
+                    //     //!debug//
+                    //     //RAFT_LOG("Leader's commit_index: %d", commit_index);
+                    //     //!debug//
+                    //     args.logEntryList = append_entry_list;
+                    //     thread_pool->enqueue(&RaftNode::send_append_entries, this, map_it->first, args);
+                    // }
+                    if(next_index[map_it->first] < physical2logic(log_entry_list.size())){
+                        // use log entry list to update
+                        if(logic2physical(next_index[map_it->first]) > 0){
+                            std::vector<LogEntry<Command>> append_entry_list;
+                            append_entry_list.clear();
+                            for(int i = logic2physical(next_index[map_it->first]); i < log_entry_list.size();++i){
+                                append_entry_list.push_back(log_entry_list[i]);
+                            }
+                            AppendEntriesArgs<Command> args;
+                            args.term = current_term;
+                            args.leaderId = my_id;
+                            args.prevLogIndex = next_index[map_it->first] - 1;
+                            args.prevLogTerm = log_entry_list[logic2physical(args.prevLogIndex)].term;
+                            args.leaderCommit = commit_index;
+                            args.logEntryList = append_entry_list;
+                            thread_pool->enqueue(&RaftNode::send_append_entries, this, map_it->first, args);
                         }
-                        AppendEntriesArgs<Command> args;
-                        args.term = current_term;
-                        args.leaderId = my_id;
-                        args.prevLogIndex = next_index[map_it->first] - 1;
-                        //!debug//
-                        //RAFT_LOG("send request to %d node, prev log index: %d", map_it->first, args.prevLogIndex);
-                        //!debug//
-                        args.prevLogTerm = log_entry_list[args.prevLogIndex].term;
-                        args.leaderCommit = commit_index;
-                        //!debug//
-                        //RAFT_LOG("Leader's commit_index: %d", commit_index);
-                        //!debug//
-                        args.logEntryList = append_entry_list;
-                        thread_pool->enqueue(&RaftNode::send_append_entries, this, map_it->first, args);
+                        // use snapshot to update
+                        else{
+                            InstallSnapshotArgs args;
+                            args.term = current_term;
+                            args.leaderId = my_id;
+                            args.lastIncludedIndex = snapshot_last_index;
+                            args.lastIncludedTerm = snapshot_last_term;
+                            // Maybe we need to store a temp snapshot in memory
+                            args.data = last_snapshot;
+                            // These two attribute is fake, because we will send to follower in single use.
+                            args.offset = 0;
+                            args.done = true;
+                            //!debug//
+                            //RAFT_LOG("send snapshot to %d node, last included index: %d by commit", map_it->first, args.lastIncludedIndex);
+                            //!debug//
+                            thread_pool->enqueue(&RaftNode::send_install_snapshot, this, map_it->first, args);
+                        }
                     }
                 }
             }
@@ -883,7 +1209,7 @@ void RaftNode<StateMachine, Command>::run_background_apply() {
             /* Lab3: Your code here */
             mtx.lock();
             if(last_applied < commit_index){
-                for(int i = last_applied + 1;i <= commit_index;++i){
+                for(int i = logic2physical(last_applied + 1);i <= logic2physical(commit_index);++i){
                     state->apply_log(log_entry_list[i].command);
                 }
                 last_applied = commit_index;
@@ -920,14 +1246,33 @@ void RaftNode<StateMachine, Command>::run_background_ping() {
                     if(target_id == my_id){
                         continue;
                     }
-                    AppendEntriesArgs<Command> heartbeat;
-                    heartbeat.term = current_term;
-                    heartbeat.leaderId = my_id;
-                    heartbeat.prevLogIndex = next_index[map_it->first] - 1;
-                    heartbeat.prevLogTerm = log_entry_list[heartbeat.prevLogIndex].term;
-                    heartbeat.leaderCommit = commit_index;
-                    heartbeat.logEntryList.clear();
-                    thread_pool->enqueue(&RaftNode::send_append_entries, this, target_id, heartbeat);
+                    if(logic2physical(next_index[map_it->first]) > 0){
+                        AppendEntriesArgs<Command> args;
+                        args.term = current_term;
+                        args.leaderId = my_id;
+                        args.prevLogIndex = next_index[map_it->first] - 1;
+                        args.prevLogTerm = log_entry_list[logic2physical(args.prevLogIndex)].term;
+                        args.leaderCommit = commit_index;
+                        args.logEntryList.clear();
+                        thread_pool->enqueue(&RaftNode::send_append_entries, this, map_it->first, args);
+                    }
+                    // use snapshot to update
+                    else{
+                        InstallSnapshotArgs args;
+                        args.term = current_term;
+                        args.leaderId = my_id;
+                        args.lastIncludedIndex = snapshot_last_index;
+                        args.lastIncludedTerm = snapshot_last_term;
+                        // Maybe we need to store a temp snapshot in memory
+                        args.data = last_snapshot;
+                        // These two attribute is fake, because we will send to follower in single use.
+                        args.offset = 0;
+                        args.done = true;
+                        //!debug//
+                        //RAFT_LOG("send snapshot to %d node, last included index: %d by heartbeat", map_it->first, args.lastIncludedIndex);
+                        //!debug//
+                        thread_pool->enqueue(&RaftNode::send_install_snapshot, this, map_it->first, args);
+                    }
                 }
             }
             mtx.unlock();
