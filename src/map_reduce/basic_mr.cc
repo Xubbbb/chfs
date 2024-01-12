@@ -3,6 +3,7 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <regex>
 
 #include "map_reduce/protocol.h"
 
@@ -18,8 +19,32 @@ namespace mapReduce{
         // Your code goes here
         // Hints: split contents into an array of words.
         std::vector<KeyVal> ret;
-        return ret;
+        ret.clear();
 
+        /**
+         * We will use C++ std::regex this library to
+         * help us use regular expressions to parse words
+        */
+        std::regex word_regex("([a-zA-Z]+)");
+        auto words_begin = std::sregex_iterator(content.begin(), content.end(), word_regex);
+        auto words_end = std::sregex_iterator();
+
+        for (std::sregex_iterator i = words_begin; i != words_end; ++i) {
+            std::smatch match = *i;
+
+            bool is_exist = false;
+            for(auto &key_val : ret){
+                if(key_val.key == match.str()){
+                    is_exist = true;
+                    key_val.val = std::to_string(std::stoi(key_val.val) + 1);
+                }
+            }
+            if(!is_exist){
+                ret.push_back(KeyVal(match.str(), std::to_string(1)));
+            }
+        }
+
+        return ret;
     }
 
 //
@@ -31,6 +56,11 @@ namespace mapReduce{
         // Your code goes here
         // Hints: return the number of occurrences of the word.
         std::string ret = "0";
+        for(auto value : values){
+            auto ret_int = std::stoi(ret);
+            auto value_int = std::stoi(value);
+            ret = std::to_string(ret_int + value_int);
+        }
         return ret;
     }
 }

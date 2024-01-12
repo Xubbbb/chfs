@@ -2,6 +2,9 @@
 #include <utility>
 #include <vector>
 #include <mutex>
+#include <chrono>
+#include <thread>
+
 #include "librpc/client.h"
 #include "librpc/server.h"
 #include "distributed/client.h"
@@ -54,14 +57,21 @@ namespace mapReduce {
     class Coordinator {
     public:
         Coordinator(MR_CoordinatorConfig config, const std::vector<std::string> &files, int nReduce);
-        std::tuple<int, int> askTask(int);
+        std::tuple<int, int, std::string, int, int> askTask(int);
         int submitTask(int taskType, int index);
         bool Done();
 
     private:
         std::vector<std::string> files;
+        std::vector<bool> map_task_handout;
+        std::vector<bool> map_task_finish;
+        std::vector<bool> reduce_task_handout;
+        std::vector<bool> reduce_task_finish;
         std::mutex mtx;
+        bool isMergeStart;
         bool isFinished;
+        bool isMapFinished;
+        bool isReduceFinished;
         std::unique_ptr<chfs::RpcServer> rpc_server;
     };
 
@@ -73,7 +83,8 @@ namespace mapReduce {
 
     private:
         void doMap(int index, const std::string &filename);
-        void doReduce(int index, int nfiles);
+        void doReduce(int index, int nfiles, int nreduces);
+        void doMerge(int nreduces);
         void doSubmit(mr_tasktype taskType, int index);
 
         std::string outPutFile;

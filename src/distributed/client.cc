@@ -102,7 +102,7 @@ auto ChfsClient::get_type_attr(inode_id_t id)
   // TODO: Implement this function.
   // UNIMPLEMENTED();
   //!debug//
-  std::cout << "start to get type attr" << std::endl;
+  //std::cout << "start to get type attr" << std::endl;
   //!debug//
   auto response = metadata_server_->call("get_type_attr", id);
   if(response.is_err()){
@@ -219,8 +219,8 @@ auto ChfsClient::write_file(inode_id_t id, usize offset, std::vector<u8> data)
     auto new_block_num = ((offset + write_length) % BLOCK_SIZE) ? ((offset + write_length) / BLOCK_SIZE + 1) : ((offset + write_length) / BLOCK_SIZE);
     auto old_block_num = block_info_vec.size();
     //!debug//
-    std::cout << "offset: " << offset << "write_length: " <<write_length << std::endl;
-    std::cout << "new_block_num: "<<new_block_num << "old_block_num: "<< old_block_num << std::endl;
+    // std::cout << "offset: " << offset << "write_length: " <<write_length << std::endl;
+    // std::cout << "new_block_num: "<<new_block_num << "old_block_num: "<< old_block_num << std::endl;
     //!debug//
     // alloc some new block
     for(auto i = old_block_num;i < new_block_num;++i){
@@ -243,7 +243,7 @@ auto ChfsClient::write_file(inode_id_t id, usize offset, std::vector<u8> data)
   auto write_end_idx = ((offset + write_length) % BLOCK_SIZE) ? ((offset + write_length) / BLOCK_SIZE + 1) : ((offset + write_length) / BLOCK_SIZE);
   auto write_end_offset = ((offset + write_length) % BLOCK_SIZE) ? ((offset + write_length) % BLOCK_SIZE) : BLOCK_SIZE;
   //!debug//
-  std::cout << "write file:" << write_start_idx << " "<<write_start_offset<<" "<<write_end_idx<<" "<<write_end_offset << " "<<block_info_vec.size() <<std::endl;
+  //std::cout << "write file:" << write_start_idx << " "<<write_start_offset<<" "<<write_end_idx<<" "<<write_end_offset << " "<<block_info_vec.size() <<std::endl;
   //!debug//
   usize current_offset = 0;
   for(auto it = block_info_vec.begin() + write_start_idx;it != block_info_vec.begin() + write_end_idx;++it){
@@ -300,7 +300,7 @@ auto ChfsClient::write_file(inode_id_t id, usize offset, std::vector<u8> data)
     }
   }
   //!debug//
-  std::cout << "write done" << std::endl;
+  //std::cout << "write done" << std::endl;
   //!debug//
   return KNullOk;
   //...if we don't need to alloc more block...//
